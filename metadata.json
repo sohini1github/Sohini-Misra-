@@ -1,0 +1,7 @@
+{
+  "name": " Ratan Tata Chatbot",
+  "description": "A conversational AI interface emulating the wisdom, humility, and business acumen of Ratan Tata, built with React, Tailwind CSS, and Google Gemini API.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
