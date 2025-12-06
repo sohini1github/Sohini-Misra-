@@ -129,7 +129,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             <img 
               src={RATAN_TATA_IMAGE_URL} 
               alt="Ratan Tata" 
-              className="w-full h-full object-cover object-top" 
+              className="w-full h-full object-cover object-top"
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = "https://ui-avatars.com/api/?name=Ratan+Tata&background=random";
+              }}
             />
           )}
         </div>
