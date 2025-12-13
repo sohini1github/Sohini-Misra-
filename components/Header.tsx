@@ -1,26 +1,40 @@
 import React from 'react';
-import { Quote, CheckCircle, Moon, Sun } from 'lucide-react';
+import { Quote, CheckCircle, Moon, Sun, Volume2, VolumeX } from 'lucide-react';
 import { RATAN_TATA_IMAGE_URL } from '../constants';
 
 interface HeaderProps {
   darkMode: boolean;
   toggleDarkMode: () => void;
+  voiceMode: boolean;
+  toggleVoiceMode: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ darkMode, toggleDarkMode }) => {
+export const Header: React.FC<HeaderProps> = ({ darkMode, toggleDarkMode, voiceMode, toggleVoiceMode }) => {
   return (
     <header className="bg-slate-900 text-white shadow-xl sticky top-0 z-20 border-b border-slate-800 transition-colors duration-300">
       <div className="max-w-4xl mx-auto px-4 py-6">
         <div className="flex flex-col md:flex-row items-center md:items-start gap-6 relative">
           
-          {/* Theme Toggle */}
-          <button
-            onClick={toggleDarkMode}
-            className="absolute top-0 right-0 p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-            title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
+          {/* Controls Container */}
+          <div className="absolute top-0 right-0 flex items-center gap-2">
+            {/* Voice Mode Toggle */}
+            <button
+              onClick={toggleVoiceMode}
+              className={`p-2 rounded-full transition-colors ${voiceMode ? 'text-blue-400 bg-slate-800' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+              title={voiceMode ? "Disable Auto-Voice" : "Enable Auto-Voice"}
+            >
+              {voiceMode ? <Volume2 size={20} /> : <VolumeX size={20} />}
+            </button>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleDarkMode}
+              className="p-2 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          </div>
 
           {/* Large Profile Photo */}
           <div className="relative group">

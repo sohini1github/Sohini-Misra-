@@ -16,9 +16,11 @@ const App: React.FC = () => {
   
   // Dark mode state
   const [darkMode, setDarkMode] = useState(() => {
-    // Check local storage or system preference on initial load could be added here
     return false; 
   });
+
+  // Voice Mode state (Auto-read responses)
+  const [voiceMode, setVoiceMode] = useState(false);
   
   // Use a ref to persist the chat session across renders
   const chatSessionRef = useRef<Chat | null>(null);
@@ -78,14 +80,14 @@ const App: React.FC = () => {
     setError(null);
 
     try {
-      // If user used voice input, we want the bot to speak back automatically
+      // If user used voice input OR global voice mode is on, we want the bot to speak back automatically
       const botPlaceholder: Message = {
         id: botMessageId,
         role: Role.MODEL,
         content: "",
         timestamp: new Date(),
         isStreaming: true,
-        shouldSpeak: isVoice // Enable auto-speak for this message
+        shouldSpeak: isVoice || voiceMode // Enable auto-speak if voice input or global voice mode enabled
       };
       
       setMessages(prev => [...prev, botPlaceholder]);
@@ -148,7 +150,12 @@ const App: React.FC = () => {
       />
 
       <div className="relative z-10 flex flex-col h-full">
-        <Header darkMode={darkMode} toggleDarkMode={toggleDarkMode} />
+        <Header 
+          darkMode={darkMode} 
+          toggleDarkMode={toggleDarkMode} 
+          voiceMode={voiceMode}
+          toggleVoiceMode={() => setVoiceMode(!voiceMode)}
+        />
         
         <main className="flex-grow overflow-y-auto px-4 py-6 scroll-smooth">
           <div className="max-w-4xl mx-auto min-h-full flex flex-col justify-end">

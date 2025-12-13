@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Message, Role } from '../types';
-import { User, Volume2, Square } from 'lucide-react';
+import { User, Volume2, Square, Loader2 } from 'lucide-react';
 import { RATAN_TATA_IMAGE_URL } from '../constants';
+import { generateSpeech } from '../services/geminiService';
+import { decodeBase64, pcmToAudioBuffer, getAudioContext } from '../utils/audioUtils';
 
 interface ChatMessageProps {
   message: Message;
@@ -11,85 +13,260 @@ interface ChatMessageProps {
 export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isUser = message.role === Role.USER;
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoadingAudio, setIsLoadingAudio] = useState(false);
+  
+  // Web Speech API refs
   const [speechSynth, setSpeechSynth] = useState<SpeechSynthesis | null>(null);
   
-  // Track if we have already auto-spoken this message to prevent loops
+  // Gemini Audio refs
+  const sourceNodeRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioBufferRef = useRef<AudioBuffer | null>(null); // Cache the AI voice
+  
   const hasAutoSpoken = useRef(false);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const synth = window.speechSynthesis;
-      setSpeechSynth(synth);
+      setSpeechSynth(window.speechSynthesis);
     }
   }, []);
 
-  // Stop speaking when component unmounts
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (speechSynth && isSpeaking) {
-        speechSynth.cancel();
+      if (typeof window !== 'undefined') {
+        if (window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+        }
+        // Stop any active audio node
+        if (sourceNodeRef.current) {
+          try {
+            sourceNodeRef.current.stop();
+          } catch (e) {
+            // Ignore error if already stopped
+          }
+        }
       }
     };
-  }, [speechSynth, isSpeaking]);
+  }, []);
 
-  const handleSpeak = () => {
-    if (!speechSynth) return;
-
-    if (isSpeaking) {
-      speechSynth.cancel();
-      setIsSpeaking(false);
-      return;
+  const stopAllSpeech = () => {
+    // Web Speech
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
     }
+    // Audio Context
+    if (sourceNodeRef.current) {
+      try {
+        sourceNodeRef.current.stop();
+      } catch (e) {
+        // already stopped
+      }
+      sourceNodeRef.current = null;
+    }
+    setIsSpeaking(false);
+    setIsLoadingAudio(false);
+  };
+
+  const detectLanguage = (text: string): string => {
+    // Unicode ranges for Indian scripts
+    if (/[\u0900-\u097F]/.test(text)) return 'hi-IN'; // Devanagari (Hindi, Marathi)
+    if (/[\u0980-\u09FF]/.test(text)) return 'bn-IN'; // Bengali
+    if (/[\u0B80-\u0BFF]/.test(text)) return 'ta-IN'; // Tamil
+    if (/[\u0C00-\u0C7F]/.test(text)) return 'te-IN'; // Telugu
+    if (/[\u0C80-\u0CFF]/.test(text)) return 'kn-IN'; // Kannada
+    if (/[\u0D00-\u0D7F]/.test(text)) return 'ml-IN'; // Malayalam
+    if (/[\u0A80-\u0AFF]/.test(text)) return 'gu-IN'; // Gujarati
+    if (/[\u0A00-\u0A7F]/.test(text)) return 'pa-IN'; // Gurmukhi (Punjabi)
     
-    // Cancel any ongoing speech before starting new
-    speechSynth.cancel();
+    return 'en-GB'; // English
+  };
 
-    // Clean up text for better speech flow
-    // Remove markdown symbols but keep structure; replace newlines with pauses
-    const textToSpeak = message.content
-      .replace(/[*#_`~]/g, '') 
-      .replace(/\[.*?\]/g, '')
-      .replace(/\n+/g, '. '); 
+  // Helper to clean text for TTS (removes markdown, links, etc)
+  const cleanTextForSpeech = (text: string): string => {
+    return text
+      .replace(/\*\*/g, '')      // Bold
+      .replace(/\*/g, '')        // Italic
+      .replace(/__|`/g, '')      // specialized formatting
+      .replace(/\[.*?\]\(.*?\)/g, '') // Markdown links [text](url)
+      .replace(/\[.*?\]/g, '')   // Reference brackets [1]
+      .replace(/[\u{1F600}-\u{1F6FF}]/u, '') // Remove emojis which can sound odd
+      .replace(/\n+/g, '. ');    // Convert newlines to pauses
+  };
 
+  const playGeminiAudio = async (base64Data: string) => {
+    try {
+      const ctx = getAudioContext();
+
+      // Resume context if suspended (browser autoplay policy)
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      let buffer = audioBufferRef.current;
+      
+      if (!buffer) {
+        const pcmData = decodeBase64(base64Data);
+        buffer = await pcmToAudioBuffer(pcmData, ctx);
+        audioBufferRef.current = buffer;
+      }
+
+      // Create source
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      
+      source.onended = () => {
+        setIsSpeaking(false);
+        sourceNodeRef.current = null;
+      };
+
+      sourceNodeRef.current = source;
+      source.start(0);
+      setIsSpeaking(true);
+
+    } catch (e) {
+      console.error("Audio playback error:", e);
+      // Fallback to browser if audio context fails
+      handleBrowserSpeak(); 
+    }
+  };
+
+  const handleBrowserSpeak = () => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    
+    const textToSpeak = cleanTextForSpeech(message.content);
     const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    const targetLang = detectLanguage(message.content);
+    const isEnglish = targetLang.startsWith('en');
+    const baseLang = targetLang.split('-')[0];
 
-    // Voice Modulation Settings for Ratan Tata Persona
-    utterance.pitch = 0.7; // Lower pitch for gravitas
-    utterance.rate = 0.85; // Measured, thoughtful pace
-    utterance.volume = 1.0;
+    // Get all available voices
+    const voices = synth.getVoices();
+    let preferredVoice = null;
 
-    // Voice Selection Strategy
-    const voices = speechSynth.getVoices();
+    // Strategy: Prioritize "Male" voices for the target language
     
-    // 1. "Google UK English Male" - Often best for "distinguished" tone
-    // 2. "en-IN" Male voices - For authentic accent if high quality
-    // 3. "Daniel" - Premium UK voice on Apple devices
-    let preferredVoice = voices.find(v => v.name.includes("Google UK English Male"));
+    // 1. Check for specific language + "Male" in name
+    preferredVoice = voices.find(v => v.lang === targetLang && v.name.toLowerCase().includes("male"));
     
+    // 2. Check for base language (e.g. 'hi' instead of 'hi-IN') + "Male"
     if (!preferredVoice) {
-      preferredVoice = voices.find(v => v.lang === "en-IN" && (v.name.toLowerCase().includes("male") || v.name.includes("Rishi")));
-    }
-    
-    if (!preferredVoice) {
-        preferredVoice = voices.find(v => v.name.includes("Daniel"));
+        preferredVoice = voices.find(v => v.lang.startsWith(baseLang) && v.name.toLowerCase().includes("male"));
     }
 
-    if (!preferredVoice) {
-        preferredVoice = voices.find(v => v.name.toLowerCase().includes("male"));
+    // 3. Special handling for English to get a high-quality persona
+    if (isEnglish && !preferredVoice) {
+         preferredVoice = voices.find(v => v.name.includes("Google UK English Male"));
+         if (!preferredVoice) {
+             preferredVoice = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes("male"));
+         }
     }
 
+    // 4. Fallbacks if no explicit "Male" voice found
+    if (!preferredVoice) {
+        // Try Google voices (usually higher quality)
+        preferredVoice = voices.find(v => v.lang === targetLang && v.name.includes("Google"));
+        
+        if (!preferredVoice) {
+             preferredVoice = voices.find(v => v.lang.startsWith(baseLang) && v.name.includes("Google"));
+        }
+        
+        // Any voice for the language
+        if (!preferredVoice) {
+             preferredVoice = voices.find(v => v.lang === targetLang);
+        }
+        
+        if (!preferredVoice) {
+             preferredVoice = voices.find(v => v.lang.startsWith(baseLang));
+        }
+    }
+
+    // Apply voice settings with gender correction
     if (preferredVoice) {
       utterance.voice = preferredVoice;
+      
+      // Check if we managed to find a confirmed male voice
+      const isConfirmedMale = preferredVoice.name.toLowerCase().includes("male") || 
+                              preferredVoice.name.includes("Fenrir") || 
+                              preferredVoice.name.includes("Rishi");
+      
+      if (isConfirmedMale) {
+           // It's already male, just use a dignified pitch
+           utterance.pitch = isEnglish ? 0.9 : 1.0; 
+      } else {
+           // It's likely a female default voice (common in Hindi/Tamil TTS).
+           // Lower pitch significantly to simulate a male voice.
+           utterance.pitch = 0.7; 
+      }
+    } else {
+        // No voice found for this language at all, use default with low pitch
+        utterance.pitch = 0.8;
     }
+
+    utterance.rate = isEnglish ? 0.9 : 0.95; 
+    utterance.volume = 1.0;
+    utterance.lang = targetLang;
 
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = (e) => {
-      console.error("Speech error:", e);
-      setIsSpeaking(false);
-    };
+    utterance.onerror = () => setIsSpeaking(false);
 
-    speechSynth.speak(utterance);
+    // Cancel any current speaking before starting new
+    synth.cancel();
+    synth.speak(utterance);
+  };
+
+  const handleSpeak = async () => {
+    if (isSpeaking) {
+      stopAllSpeech();
+      return;
+    }
+
+    // Language Check
+    const lang = detectLanguage(message.content);
+
+    // If English, try Gemini High Quality Voice first
+    if (lang === 'en-GB') {
+      // If we already have the buffer cached, play it immediately
+      if (audioBufferRef.current) {
+         try {
+           const ctx = getAudioContext();
+           if (ctx.state === 'suspended') await ctx.resume();
+           
+           const source = ctx.createBufferSource();
+           source.buffer = audioBufferRef.current;
+           source.connect(ctx.destination);
+           source.onended = () => {
+               setIsSpeaking(false);
+               sourceNodeRef.current = null;
+           };
+           sourceNodeRef.current = source;
+           source.start(0);
+           setIsSpeaking(true);
+           return;
+         } catch(e) {
+           console.error("Cached play failed", e);
+         }
+      }
+
+      // Fetch new audio
+      setIsLoadingAudio(true);
+      
+      const cleanText = cleanTextForSpeech(message.content);
+      const audioData = await generateSpeech(cleanText);
+      setIsLoadingAudio(false);
+
+      if (audioData) {
+        await playGeminiAudio(audioData);
+      } else {
+        // Fallback to browser if Gemini fails
+        handleBrowserSpeak();
+      }
+    } else {
+      // For Indian languages, Browser TTS is often better/native
+      handleBrowserSpeak();
+    }
   };
 
   // Auto-Speak Effect
@@ -99,17 +276,15 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
         !message.isStreaming && 
         message.content && 
         !isUser && 
-        !hasAutoSpoken.current &&
-        speechSynth
+        !hasAutoSpoken.current
     ) {
-        // Small delay to ensure streaming is visibly done and it feels natural
         const timer = setTimeout(() => {
             handleSpeak();
             hasAutoSpoken.current = true;
         }, 500);
         return () => clearTimeout(timer);
     }
-  }, [message.shouldSpeak, message.isStreaming, message.content, speechSynth, isUser]);
+  }, [message.shouldSpeak, message.isStreaming, message.content, isUser]);
 
   return (
     <div className={`flex w-full mb-6 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -164,6 +339,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
             <div className="mt-1 ml-1">
               <button
                 onClick={handleSpeak}
+                disabled={isLoadingAudio}
                 className={`
                   flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-all duration-200 border
                   ${isSpeaking 
@@ -173,7 +349,12 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
                 `}
                 title={isSpeaking ? "Stop speaking" : "Listen to response"}
               >
-                {isSpeaking ? (
+                {isLoadingAudio ? (
+                  <>
+                     <Loader2 size={12} className="animate-spin" />
+                     <span className="font-medium">Loading Voice...</span>
+                  </>
+                ) : isSpeaking ? (
                   <>
                     <Square size={10} fill="currentColor" />
                     <span className="font-medium">Stop</span>
